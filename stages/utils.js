@@ -25,8 +25,10 @@ function progressFromEvent(event) {
 
 // Spawn Claude Code with stream-json output; calls logFn(line) for each progress event
 function spawnClaude(args, cwd, logFn) {
+  // stream-json requires --verbose when used with -p / --print
+  const fullArgs = args.includes('--output-format') ? ['--verbose', ...args] : args;
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn('claude', fullArgs, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     let buf = '';
 
