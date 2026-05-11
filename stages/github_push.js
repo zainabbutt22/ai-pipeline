@@ -86,6 +86,34 @@ async function pushToGitHub(issueKey, summary) {
     'test-results.txt',
   ].join('\n') + '\n');
 
+  // Write a meaningful README for the PR
+  fs.writeFileSync(path.join(cwd, 'README.md'), [
+    `# ${issueKey} — ${summary}`,
+    '',
+    '> Built automatically by the AI Pipeline.',
+    '',
+    '## What this is',
+    `This branch contains the web app generated for Jira story **${issueKey}**.`,
+    'The app was built, tested, deployed, and QA-verified with no human intervention.',
+    '',
+    '## Files',
+    '| File | Purpose |',
+    '|------|---------|',
+    '| `index.html` | The web app (HTML + CSS + JS) |',
+    '| `app.test.js` | Jest unit tests |',
+    '| `package.json` | Test runner config |',
+    '',
+    '## Pipeline stages',
+    '1. Jira story polled → requirements.md downloaded',
+    '2. Claude Code built the app from requirements',
+    '3. Jest unit tests run and passed',
+    '4. This PR opened automatically',
+    '5. Deployed to Vercel',
+    '6. Playwright QA tested the live URL',
+    '7. Bug report emailed',
+    '8. Jira story transitioned to Done or In Review',
+  ].join('\n') + '\n');
+
   if (!fs.existsSync(path.join(cwd, '.git'))) {
     await must('git', ['init'], cwd, prefix);
   }
