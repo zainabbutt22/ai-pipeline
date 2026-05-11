@@ -75,7 +75,29 @@ async function pushToGitHub(issueKey, summary) {
   log(issueKey, `Repo: ${repoUrl}`);
   log(issueKey, `Branch: ${branchName}`);
 
-  // Write a .gitignore that keeps the workspace clean — no test artefacts, no deps
+  if (!fs.existsSync(path.join(cwd, '.git'))) {
+    await must('git', ['init'], cwd, prefix);
+  }
+
+  await run('git', ['config', '--local', 'user.email', 'pipeline@ai.local'], cwd, prefix);
+  await run('git', ['config', '--local', 'user.name', 'AI Pipeline'], cwd, prefix);
+
+  // Point origin at the central repo
+  const remotes = await run('git', ['remote'], cwd, prefix);
+  if (!remotes.stdout.includes('origin')) {
+    await must('git', ['remote', 'add', 'origin', `https://github.com/${fullRepo}.git`], cwd, prefix);
+  } else {
+    await must('git', ['remote', 'set-url', 'origin', `https://github.com/${fullRepo}.git`], cwd, prefix);
+  }
+
+  // Fetch main from the central repo (guaranteed to exist because ensureRepo uses --add-readme)
+  await must('git', ['fetch', 'origin', 'main'], cwd, prefix);
+
+  // (Re-)create feature branch from origin/main so each run is idempotent
+  await run('git', ['branch', '-D', branchName], cwd, prefix); // silently fails if branch doesn't exist
+  await must('git', ['checkout', '-b', branchName, 'origin/main'], cwd, prefix);
+
+  // Write .gitignore and README after checkout so they don't conflict with origin/main's files
   fs.writeFileSync(path.join(cwd, '.gitignore'), [
     'node_modules/',
     'screenshots/',
@@ -86,7 +108,6 @@ async function pushToGitHub(issueKey, summary) {
     'test-results.txt',
   ].join('\n') + '\n');
 
-  // Write a meaningful README for the PR
   fs.writeFileSync(path.join(cwd, 'README.md'), [
     `# ${issueKey} — ${summary}`,
     '',
@@ -113,28 +134,6 @@ async function pushToGitHub(issueKey, summary) {
     '7. Bug report emailed',
     '8. Jira story transitioned to Done or In Review',
   ].join('\n') + '\n');
-
-  if (!fs.existsSync(path.join(cwd, '.git'))) {
-    await must('git', ['init'], cwd, prefix);
-  }
-
-  await run('git', ['config', '--local', 'user.email', 'pipeline@ai.local'], cwd, prefix);
-  await run('git', ['config', '--local', 'user.name', 'AI Pipeline'], cwd, prefix);
-
-  // Point origin at the central repo
-  const remotes = await run('git', ['remote'], cwd, prefix);
-  if (!remotes.stdout.includes('origin')) {
-    await must('git', ['remote', 'add', 'origin', `https://github.com/${fullRepo}.git`], cwd, prefix);
-  } else {
-    await must('git', ['remote', 'set-url', 'origin', `https://github.com/${fullRepo}.git`], cwd, prefix);
-  }
-
-  // Fetch main from the central repo (guaranteed to exist because ensureRepo uses --add-readme)
-  await must('git', ['fetch', 'origin', 'main'], cwd, prefix);
-
-  // (Re-)create feature branch from origin/main so each run is idempotent
-  await run('git', ['branch', '-D', branchName], cwd, prefix); // silently fails if branch doesn't exist
-  await must('git', ['checkout', '-b', branchName, 'origin/main'], cwd, prefix);
 
   // Stage and commit all app files (node_modules etc. excluded by .gitignore)
   await must('git', ['add', '-A'], cwd, prefix);
