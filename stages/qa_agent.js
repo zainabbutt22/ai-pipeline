@@ -147,6 +147,8 @@ async function runQA(issueKey, deploymentUrl) {
 
   fs.writeFileSync(path.join(workspaceDir, 'playwright.config.js'), [
     'module.exports = {',
+    "  testDir: '.',",
+    "  testIgnore: ['**/*.test.js'],",
     "  use: { browserName: 'chromium', headless: true },",
     '  retries: 0,',
     '};',
@@ -189,12 +191,10 @@ async function runQA(issueKey, deploymentUrl) {
     }
     log(issueKey, 'qa.spec.js written — running Playwright');
 
-    const specPath = path.join('workspace', issueKey, 'qa.spec.js');
-    const configPath = path.join('workspace', issueKey, 'playwright.config.js');
     const pw = await spawnCapture(
       'npx',
-      ['playwright', 'test', specPath, `--config=${configPath}`, '--reporter=json'],
-      process.cwd(), prefix,
+      ['playwright', 'test', '--reporter=json'],
+      workspaceDir, prefix,
       false  // stdout is JSON — don't print it
     );
     // exit code 1 = tests failed (expected); only throw on spawn error
