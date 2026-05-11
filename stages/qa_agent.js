@@ -237,7 +237,8 @@ async function runQA(issueKey, deploymentUrl) {
 
   const passed = tests.filter(t => t.status === 'passed').length;
   const failed = tests.filter(t => t.status !== 'passed').length;
-  const overallStatus = failed === 0 ? 'PASS' : passed === 0 ? 'FAIL' : 'PARTIAL';
+  // 0 tests means Playwright ran but found nothing — treat as FAIL, not PASS
+  const overallStatus = tests.length === 0 ? 'FAIL' : failed === 0 ? 'PASS' : passed === 0 ? 'FAIL' : 'PARTIAL';
 
   fs.writeFileSync(bugReportPath, generateBugReport(issueKey, deploymentUrl, tests, screenshots, consoleErrors));
   log(issueKey, `QA complete — ${overallStatus} (${passed} passed, ${failed} failed)`);

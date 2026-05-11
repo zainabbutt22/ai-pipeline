@@ -159,7 +159,8 @@ async function processIssue(issue) {
     }
 
     // Stage 7: email bug report (non-fatal — never sets ps.error)
-    if (!ps.error) {
+    // Runs whenever QA produced a result, regardless of earlier failures
+    if (ps.qaResult) {
       ps.stage = 'email';
       log(key, '▶  Stage 7/7 — Sending email report');
       try {

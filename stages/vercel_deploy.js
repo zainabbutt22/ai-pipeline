@@ -52,7 +52,8 @@ async function uploadFile(buf) {
 
 async function deployToVercel(issueKey, repoUrl, branchName) {
   const workspaceDir = path.resolve(path.join('workspace', issueKey));
-  const projectName = repoUrl.split('/').pop().toLowerCase().replace(/\.git$/, '');
+  // Per-issue project name so each story gets its own Vercel project and URL
+  const projectName = `ai-pipeline-${issueKey.toLowerCase()}`;
   log(issueKey, `Project: ${projectName}`);
 
   // Ensure Vercel project exists
