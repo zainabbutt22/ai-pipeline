@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const log = (key, msg) => console.log(`[${new Date().toISOString()}] [github:${key}] ${msg}`);
+const APPS_REPO = process.env.APPS_REPO || 'ai-pipeline-apps';
 
 function prefixLines(text, prefix) {
   return text.toString().split('\n')
@@ -39,90 +40,116 @@ function sanitize(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
 }
 
+async function getGitHubUser(cwd, prefix) {
+  const r = await run('gh', ['api', 'user', '-q', '.login'], cwd, prefix);
+  if (r.code !== 0 || !r.stdout) throw new Error('Could not get GitHub username via `gh api user`');
+  return r.stdout.trim();
+}
+
+// Creates the central repo if it doesn't already exist; returns "user/repo"
+async function ensureRepo(ghUser, cwd, prefix) {
+  const fullRepo = `${ghUser}/${APPS_REPO}`;
+  const check = await run('gh', ['repo', 'view', fullRepo], cwd, prefix);
+  if (check.code !== 0) {
+    log('setup', `Creating central repo: ${fullRepo}`);
+    await must('gh', ['repo', 'create', APPS_REPO, '--public', '--add-readme'], cwd, prefix);
+    log('setup', `Repo created: https://github.com/${fullRepo}`);
+  }
+  return fullRepo;
+}
+
 async function pushToGitHub(issueKey, summary) {
   const cwd = path.resolve(path.join('workspace', issueKey));
   const prefix = `[github:${issueKey}]`;
 
-  // Verify gh CLI is installed and authenticated
   const ghCheck = await run('gh', ['auth', 'status'], cwd, prefix).catch(() => ({ code: 127 }));
   if (ghCheck.code !== 0) {
-    throw new Error('gh CLI not found or not authenticated. Install from https://cli.github.com and run `gh auth login`.');
+    throw new Error('gh CLI not found or not authenticated. Run `gh auth login` first.');
   }
 
-  const isNewRepo = !fs.existsSync(path.join(cwd, '.git'));
+  const ghUser = await getGitHubUser(cwd, prefix);
+  const fullRepo = await ensureRepo(ghUser, cwd, prefix);
+  const repoUrl = `https://github.com/${fullRepo}`;
+  const branchName = `feature/${issueKey.toLowerCase()}-${sanitize(summary)}`;
 
-  if (isNewRepo) {
-    log(issueKey, 'Initialising git repo');
-    await must('git', ['init'], cwd, prefix);
-    await must('git', ['checkout', '-b', 'main'], cwd, prefix);
-    fs.writeFileSync(path.join(cwd, '.gitignore'), 'node_modules/\n');
-  }
-
-  // Set user config before any commit
-  const emailCheck = await run('git', ['config', 'user.email'], cwd, prefix);
-  if (!emailCheck.stdout) {
-    await must('git', ['config', '--local', 'user.email', 'pipeline@ai.local'], cwd, prefix);
-    await must('git', ['config', '--local', 'user.name', 'AI Pipeline'], cwd, prefix);
-  }
-
-  if (isNewRepo) {
-    // Minimal initial commit on main so the branch has a valid base
-    await must('git', ['add', '.gitignore'], cwd, prefix);
-    await must('git', ['commit', '-m', 'chore: init'], cwd, prefix);
-  }
-
-  const branchName = `feature/${issueKey}-${sanitize(summary)}`;
+  log(issueKey, `Repo: ${repoUrl}`);
   log(issueKey, `Branch: ${branchName}`);
 
-  // Create branch or switch to it if it already exists
-  const branchResult = await run('git', ['checkout', '-b', branchName], cwd, prefix);
-  if (branchResult.code !== 0) {
-    await must('git', ['checkout', branchName], cwd, prefix);
+  // Write a .gitignore that keeps the workspace clean — no test artefacts, no deps
+  fs.writeFileSync(path.join(cwd, '.gitignore'), [
+    'node_modules/',
+    'screenshots/',
+    'test-results/',
+    'playwright-report/',
+    'qa.spec.js',
+    'bug-report.md',
+    'test-results.txt',
+  ].join('\n') + '\n');
+
+  if (!fs.existsSync(path.join(cwd, '.git'))) {
+    await must('git', ['init'], cwd, prefix);
   }
 
-  // Stage and commit (skip commit if working tree is already clean)
+  await run('git', ['config', '--local', 'user.email', 'pipeline@ai.local'], cwd, prefix);
+  await run('git', ['config', '--local', 'user.name', 'AI Pipeline'], cwd, prefix);
+
+  // Point origin at the central repo
+  const remotes = await run('git', ['remote'], cwd, prefix);
+  if (!remotes.stdout.includes('origin')) {
+    await must('git', ['remote', 'add', 'origin', `https://github.com/${fullRepo}.git`], cwd, prefix);
+  } else {
+    await must('git', ['remote', 'set-url', 'origin', `https://github.com/${fullRepo}.git`], cwd, prefix);
+  }
+
+  // Fetch main from the central repo (guaranteed to exist because ensureRepo uses --add-readme)
+  await must('git', ['fetch', 'origin', 'main'], cwd, prefix);
+
+  // (Re-)create feature branch from origin/main so each run is idempotent
+  await run('git', ['branch', '-D', branchName], cwd, prefix); // silently fails if branch doesn't exist
+  await must('git', ['checkout', '-b', branchName, 'origin/main'], cwd, prefix);
+
+  // Stage and commit all app files (node_modules etc. excluded by .gitignore)
   await must('git', ['add', '-A'], cwd, prefix);
   const status = await run('git', ['status', '--porcelain'], cwd, prefix);
   if (status.stdout) {
-    await must('git', ['commit', '-m', `${issueKey}: ${summary}`], cwd, prefix);
+    await must('git', ['commit', '-m', `feat(${issueKey}): ${summary}`], cwd, prefix);
   } else {
     log(issueKey, 'Working tree clean — skipping commit');
   }
 
-  // Push; create GitHub repo if no remote exists yet
-  const remoteResult = await run('git', ['remote'], cwd, prefix);
-  let repoUrl;
+  await must('git', ['push', '-u', '--force-with-lease', 'origin', branchName], cwd, prefix);
 
-  if (!remoteResult.stdout) {
-    const repoName = `ai-pipeline-${issueKey.toLowerCase()}`;
-    log(issueKey, `Creating GitHub repo: ${repoName}`);
-    const createResult = await must(
-      'gh', ['repo', 'create', repoName, '--public', '--source=.', '--remote=origin'],
-      cwd, prefix
-    );
-    const match = createResult.combined.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+/);
-    repoUrl = match ? match[0] : '';
-    await must('git', ['push', '-u', 'origin', 'main'], cwd, prefix);
-    await must('git', ['push', '-u', 'origin', branchName], cwd, prefix);
-  } else {
-    const urlResult = await run('git', ['remote', 'get-url', 'origin'], cwd, prefix);
-    repoUrl = urlResult.stdout;
-    await must('git', ['push', '-u', 'origin', branchName], cwd, prefix);
-  }
-
-  // Open PR
+  // Create PR (handle the case where one already exists for this branch)
   log(issueKey, 'Creating PR');
-  const prResult = await must('gh', [
+  const prArgs = [
     'pr', 'create',
+    '--repo', fullRepo,
     '--title', `[${issueKey}] ${summary}`,
-    '--body', `Automated PR from AI pipeline. Closes ${issueKey}.`,
+    '--body', `Automated PR from AI pipeline.\n\nCloses ${issueKey}.`,
     '--base', 'main',
     '--head', branchName,
-  ], cwd, prefix);
+  ];
+  const prResult = await run('gh', prArgs, cwd, prefix);
 
-  const prUrl = prResult.stdout.trim();
-  log(issueKey, `PR created: ${prUrl}`);
+  let prUrl;
+  if (prResult.code === 0) {
+    prUrl = prResult.stdout.trim();
+  } else {
+    // PR may already exist for this branch — look it up
+    const existing = await run('gh', [
+      'pr', 'view', branchName,
+      '--repo', fullRepo,
+      '--json', 'url', '-q', '.url',
+    ], cwd, prefix);
+    if (existing.code === 0 && existing.stdout) {
+      prUrl = existing.stdout.trim();
+      log(issueKey, `PR already exists: ${prUrl}`);
+    } else {
+      throw new Error(`gh pr create failed: ${prResult.stderr}`);
+    }
+  }
 
+  log(issueKey, `PR ready: ${prUrl}`);
   return { branchName, prUrl, repoUrl };
 }
 
